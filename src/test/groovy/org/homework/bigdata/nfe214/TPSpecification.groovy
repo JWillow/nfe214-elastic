@@ -1,5 +1,6 @@
 package org.homework.bigdata.nfe214
 
+import ch.qos.logback.classic.LoggerContext
 import org.apache.http.HttpHost
 import org.elasticsearch.action.search.SearchRequest
 import org.elasticsearch.action.search.SearchResponse
@@ -7,21 +8,25 @@ import org.elasticsearch.client.RestClient
 import org.elasticsearch.client.RestHighLevelClient
 import org.elasticsearch.index.query.*
 import org.elasticsearch.search.SearchHit
+import org.elasticsearch.search.aggregations.AggregationBuilders
+import org.elasticsearch.search.aggregations.bucket.terms.Terms
 import org.elasticsearch.search.builder.SearchSourceBuilder
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import spock.lang.Shared
 import spock.lang.Specification
 
+// docker run -d --name remy-elastic -p 9200:9200 -p 9300:9300 elasticsearch
 class TPSpecification extends Specification {
-    // docker run -d --name remy-elastic -p 9200:9200 -p 9300:9300 elasticsearch
-    // docker exec cec5ed2846bf plugin install lmenezes/elasticsearch-kopf
+
     @Shared
     RestHighLevelClient client
-
 
     def setupSpec() {
         RestClient restClient = RestClient.builder(
                 new HttpHost("localhost", 9200, "http"),
                 new HttpHost("localhost", 9300, "http")).build()
+
         client = new RestHighLevelClient(restClient)
     }
 
@@ -240,22 +245,16 @@ class TPSpecification extends Specification {
         SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
         searchRequest.source(searchSourceBuilder)
 
-        MatchQueryBuilder mqb = QueryBuilders.matchQuery("fields.directors", "James Cameron")
-        mqb.operator(Operator.AND)
-
-        RangeQueryBuilder rangeQueryBuilder = QueryBuilders.rangeQuery("fields.rank")
-        rangeQueryBuilder.lt(1000)
-
-        BoolQueryBuilder booleanQuery = QueryBuilders.boolQuery().must(mqb).must(rangeQueryBuilder)
-
-        searchSourceBuilder.query(booleanQuery)
+        searchSourceBuilder.aggregation(AggregationBuilders.terms("byYear").field("fields.year"))
 
         when:
         SearchResponse searchResponse = client.search(searchRequest)
 
         then:
-        searchResponse.getHits().each { SearchHit hit ->
-            println "${hit.score} - ${hit.getSourceAsMap().fields.title}, ${hit.getSourceAsMap().fields.rank}"
+        Terms byYear = searchResponse.getAggregations().get("byYear")
+        byYear.getBuckets().each {Terms.Bucket bucket ->
+            println "${bucket.key} - ${bucket.docCount}"
+
         }
 
     }
