@@ -1,6 +1,5 @@
 package org.homework.bigdata.nfe214
 
-import ch.qos.logback.classic.LoggerContext
 import org.apache.http.HttpHost
 import org.elasticsearch.action.search.SearchRequest
 import org.elasticsearch.action.search.SearchResponse
@@ -8,16 +7,19 @@ import org.elasticsearch.client.RestClient
 import org.elasticsearch.client.RestHighLevelClient
 import org.elasticsearch.index.query.*
 import org.elasticsearch.search.SearchHit
+import org.elasticsearch.search.aggregations.AggregationBuilder
 import org.elasticsearch.search.aggregations.AggregationBuilders
+import org.elasticsearch.search.aggregations.bucket.range.Range
 import org.elasticsearch.search.aggregations.bucket.terms.Terms
+import org.elasticsearch.search.aggregations.metrics.avg.Avg
+import org.elasticsearch.search.aggregations.metrics.max.Max
+import org.elasticsearch.search.aggregations.metrics.min.Min
 import org.elasticsearch.search.builder.SearchSourceBuilder
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
 import spock.lang.Shared
 import spock.lang.Specification
 
 // docker run -d --name remy-elastic -p 9200:9200 -p 9300:9300 elasticsearch
-class TPSpecification extends Specification {
+class TP11Specification extends Specification {
 
     @Shared
     RestHighLevelClient client
@@ -38,9 +40,9 @@ class TPSpecification extends Specification {
         return searchRequest
     }
 
-    def "Utilisation de query string pour la recherche des films entre 1990 et 2015 ou dont le titre ne contient pas de M"() {
+    def "Recherche des films dont le titre contient life"() {
         when:
-        SearchResponse searchResponse = client.search(buildQueryString("fields.year:[1990 TO 2005] AND NOT fields.title:M*"))
+        SearchResponse searchResponse = client.search(buildQueryString("fields.title:life"))
 
         then:
         searchResponse.getHits().each { SearchHit hit ->
@@ -252,10 +254,141 @@ class TPSpecification extends Specification {
 
         then:
         Terms byYear = searchResponse.getAggregations().get("byYear")
-        byYear.getBuckets().each {Terms.Bucket bucket ->
+        byYear.getBuckets().each { Terms.Bucket bucket ->
             println "${bucket.key} - ${bucket.docCount}"
-
         }
+    }
 
+    def "Donner la note moyenne des films"() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        searchSourceBuilder.aggregation(AggregationBuilders.avg("avgRating").field("fields.rating"))
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        Avg avgRating = searchResponse.getAggregations().get("avgRating")
+        println avgRating.getValue()
+    }
+
+    def "Donner la note moyenne et le rang moyen des films de George Lucas"() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        MatchQueryBuilder queryB = QueryBuilders.matchQuery("fields.directors", "George Lucas")
+        queryB.operator(Operator.AND)
+        searchSourceBuilder.query(queryB)
+
+        AggregationBuilder avgRatingAggrBuilder = AggregationBuilders.avg("avgRating").field("fields.rating")
+        AggregationBuilder avgRankAggrBuilder = AggregationBuilders.avg("avgRank").field("fields.rank")
+
+        searchSourceBuilder.aggregation(avgRatingAggrBuilder)
+        searchSourceBuilder.aggregation(avgRankAggrBuilder)
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        searchResponse.getHits().each { SearchHit hit ->
+            println "${hit.getSourceAsMap().fields.rank}/${hit.getSourceAsMap().fields.rating} - ${hit.getSourceAsMap().fields.title}, ${hit.getSourceAsMap().fields.directors}"
+        }
+        Avg avgRating = searchResponse.getAggregations().get("avgRating")
+        println "AVG_RATING : ${avgRating.getValue()}"
+        Avg avgRank = searchResponse.getAggregations().get("avgRank")
+        println "AVG_RANK : ${avgRank.getValue()}"
+    }
+
+    def "Donner la note moyenne des films par année"() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        searchSourceBuilder.aggregation(AggregationBuilders.terms("byYear").field("fields.year")
+                .subAggregation(AggregationBuilders.avg("avgRating").field("fields.rating")))
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        Terms byYear = searchResponse.getAggregations().get("byYear")
+        byYear.getBuckets().each { Terms.Bucket bucket ->
+            Avg avgRating = bucket.getAggregations().get("avgRating")
+            println "Year : ${bucket.key} - Nb Films : ${bucket.docCount} - AvgRating : ${avgRating.value}"
+        }
+    }
+
+    def "Donner la note minimum, maximum et moyenne des films par année"() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        searchSourceBuilder.aggregation(AggregationBuilders.terms("byYear").field("fields.year")
+                .subAggregation(AggregationBuilders.avg("avgRating").field("fields.rating"))
+                .subAggregation(AggregationBuilders.min("minRating").field("fields.rating"))
+                .subAggregation(AggregationBuilders.max("maxRating").field("fields.rating")))
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        Terms byYear = searchResponse.getAggregations().get("byYear")
+        byYear.getBuckets().each { Terms.Bucket bucket ->
+            Avg avgRating = bucket.getAggregations().get("avgRating")
+            Min minRating = bucket.getAggregations().get("minRating")
+            Max maxRating = bucket.getAggregations().get("maxRating")
+            println "Year : ${bucket.key} - Nb Films : ${bucket.docCount} - AvgRating : ${avgRating.value} - MinRating : ${minRating.value} - MaxRating : ${maxRating.value}"
+        }
+    }
+
+    def "Donner le rang moyen des films par année et trier par ordre décroissant"() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        searchSourceBuilder.aggregation(AggregationBuilders.terms("byYear").field("fields.year").order(Terms.Order.term(false))
+                .subAggregation(AggregationBuilders.avg("avgRank").field("fields.rank")))
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        Terms byYear = searchResponse.getAggregations().get("byYear")
+        byYear.getBuckets().each { Terms.Bucket bucket ->
+            Avg avgRank = bucket.getAggregations().get("avgRank")
+            println "Year : ${bucket.key} - Nb Films : ${bucket.docCount} - AvgRank : ${avgRank.value}"
+        }
+    }
+
+    def "Compter le nombre de films par tranche ...-1.9 2-3.9 4-5.9 6-7.9 8-+..."() {
+        setup:
+        SearchRequest searchRequest = new SearchRequest("movies")
+        SearchSourceBuilder searchSourceBuilder = new SearchSourceBuilder()
+        searchRequest.source(searchSourceBuilder)
+
+        searchSourceBuilder.aggregation(AggregationBuilders.range("filmRange").field("fields.rating")
+                .addUnboundedTo(1.9)
+                .addRange(2,3.9)
+                .addRange(4,5.9)
+                .addRange(6,7)
+                .addUnboundedFrom(8)
+        )
+
+        when:
+        SearchResponse searchResponse = client.search(searchRequest)
+
+        then:
+        Range filmRange = searchResponse.getAggregations().get("filmRange")
+        filmRange.getBuckets().each { Range.Bucket bucket ->
+            println "${bucket.from} ... ${bucket.to} : ${bucket.docCount}"
+        }
     }
 }
